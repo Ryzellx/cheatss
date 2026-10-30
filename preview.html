@@ -1,0 +1,58 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Board Coach — preview</title>
+<style>
+  body { margin:0; background:#1b1f27; font-family: system-ui, sans-serif; height:100vh;
+         display:flex; align-items:center; justify-content:center; }
+  .wrap { display:flex; gap:28px; align-items:center; }
+  .board { width:432px; height:432px; display:grid; grid-template-columns:repeat(8,1fr);
+           border-radius:6px; overflow:hidden; box-shadow:0 18px 50px rgba(0,0,0,.6); }
+  .sq { display:flex; align-items:center; justify-content:center; font-size:38px; line-height:1;
+        user-select:none; }
+  .lt { background:#eeeed2; } .dk { background:#769656; }
+  .w { color:#fff; text-shadow:0 0 2px #000,0 1px 2px #000; }
+  .b { color:#111; text-shadow:0 0 2px #fff8; }
+  .arrow { position:absolute; pointer-events:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="board" id="board"></div>
+</div>
+<script src="classify.js"></script>
+<script src="elo.js"></script>
+<script src="ui.js"></script>
+<script>
+const layout = {
+  56:'r',57:'n',58:'b',59:'q',60:'k',61:'b',62:'n',63:'r',
+  48:'p',49:'p',50:'p',51:'p',53:'p',54:'p',55:'p',
+  36:'p',
+  28:'P',21:'N',
+  8:'R',9:'N',10:'B',11:'Q',12:'K',13:'B',15:'R'
+};
+const board = document.getElementById('board');
+for (let i = 0; i < 64; i++) {
+  const d = document.createElement('div');
+  const row = Math.floor(i / 8), col = i % 8;
+  d.className = 'sq ' + ((row + col) % 2 ? 'dk' : 'lt');
+  const p = layout[i];
+  if (p) {
+    const isW = p === p.toUpperCase();
+    const glyph = {k:'♚',q:'♛',r:'♜',b:'♝',n:'♞',p:'♟'}[p.toLowerCase()];
+    d.innerHTML = '<span class="' + (isW ? 'w' : 'b') + '">' + glyph + '</span>';
+  }
+  board.appendChild(d);
+}
+
+const ui = BCUI.mount({ elo: 1800, arrow: true, autoMove: false, enabled: true, moveDelay: 900 });
+ui.setElo(BCElo.forElo(1800));
+ui.setBest('f1c4');
+ui.setInfo({ depth: 12, nodes: 431000, evalCp: 87, ms: 1830 });
+ui.addLog('engine siap · 11/20', 'ok');
+ui.addLog('posisi baru · 31 bidak', 'ok');
+ui.addLog('bestmove f1c4', 'ok');
+ui.setStatus('ok', 'ok');
+ui.show();
+</script>
+</body>
+</html>

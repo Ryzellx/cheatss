@@ -1,0 +1,42 @@
+/* overlay.css — gaya overlay, sengaja pakai nama kelas generik */
+#bc-arrow-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 30;
+}
+.bc-arrow {
+  stroke: #22c55e;
+  stroke-width: 4;
+  stroke-linecap: round;
+  fill: none;
+  opacity: 0.9;
+}
+.bc-arrow-head {
+  fill: #22c55e;
+  opacity: 0.9;
+}
+.bc-square {
+  fill: none;
+  stroke: #22c55e;
+  stroke-width: 3;
+  opacity: 0.85;
+}
+#bc-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2147483000;
+  font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(17, 24, 39, 0.94);
+  color: #e5e7eb;
+  border: 1px solid #374151;
+  border-radius: 10px;
+  padding: 10px 12px;
+  min-width: 190px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+#bc-panel .bc-row { display: flex; justify-content: space-between; gap: 10px; }
+#bc-panel .bc-key { color: #9ca3af; }
+#bc-panel .bc-val { color: #22c55e; font-weight: 600; }
+#bc-panel .bc-hint { color: #6b7280; margin-top: 6px; font-size: 11px; }

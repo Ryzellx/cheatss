@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <style>
+    body { width: 250px; margin: 0; padding: 12px; font: 13px/1.5 system-ui, sans-serif;
+           background: #111827; color: #e5e7eb; }
+    h1 { font-size: 13px; margin: 0 0 10px; letter-spacing: .3px; color: #22c55e; }
+    label { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin: 8px 0; }
+    input[type=range] { width: 100%; }
+    .val { color: #22c55e; font-weight: 700; }
+    .hint { color: #6b7280; font-size: 11px; margin-top: 10px; line-height: 1.45; }
+    .row2 { display: flex; align-items: center; justify-content: space-between; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <h1>BOARD COACH</h1>
+  <label>aktif <input type="checkbox" id="enabled" checked /></label>
+  <label>panah <input type="checkbox" id="arrow" checked /></label>
+  <label>auto-move <input type="checkbox" id="autoMove" /></label>
+
+  <div class="row2"><span>ELO</span><span class="val" id="eloVal">2800</span></div>
+  <input type="range" id="elo" min="600" max="2800" step="50" value="2800" />
+  <div class="hint" id="eloHint">kekuatan penuh</div>
+
+  <div class="row2"><span>jeda auto-move</span><span class="val" id="delayVal">900 ms</span></div>
+  <input type="range" id="moveDelay" min="200" max="3000" step="100" value="900" />
+
+  <div class="hint">Alt+Z on/off · Alt+X hitung · Alt+C FEN · Alt+↑/↓ ELO</div>
+  <script src="elo.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>
