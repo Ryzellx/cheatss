@@ -36,6 +36,7 @@
   let searchSeq = 0;
   let infoCount = 0;
   let staleStop = false;
+  let searching = false;
   let searchFen = '';
 
   let evalCache = new Map();    // fen -> {cp, mate, best, gap, legal}
@@ -50,6 +51,16 @@
   let auxBest = null;
 
   const profile = () => BCElo.forElo(CFG.elo);
+
+  // Batas atas waktu berpikir: asm.js di HP sering melewati movetime, jadi
+  // panah terasa lambat. 900 ms / depth 12 sudah sangat kuat untuk saran langkah.
+  const FAST_MOVETIME = 900;
+  const FAST_DEPTH = 12;
+  function fastGo(p) {
+    const mt = Math.max(120, Math.min(p.movetime, FAST_MOVETIME));
+    const dp = Math.max(2, Math.min(p.depth, FAST_DEPTH));
+    return `go movetime ${mt} depth ${dp}`;
+  }
 
   /* ---------------- jembatan ke dunia halaman ---------------- */
 
@@ -201,6 +212,14 @@
       } catch (_) {}
     }
     return diffUci(oldFen, newFen);
+  }
+
+  // nomor ply dari FEN: (fullmove-1)*2 + (hitam?1:0)
+  function plyIndex(fen) {
+    const p = String(fen || '').split(' ');
+    const side = p[1] === 'b' ? 1 : 0;
+    const full = Number(p[5]) || 1;
+    return (full - 1) * 2 + side;
   }
 
   // Cari from/to dengan membandingkan dua FEN (cadangan kalau API tidak ada)
@@ -356,6 +375,7 @@
 
     if (mode === 'aux') {
       mode = 'main';
+      searching = false;
       const done = auxResolve;
       auxResolve = null;
       busy = false;
@@ -369,6 +389,7 @@
       return;
     }
     staleStop = false;
+    searching = false;
 
     busy = false;
     const chosen = BCElo.pickMove(candidates.filter(Boolean).map((c) => c.uci), profile()) || bm[1];
@@ -405,7 +426,8 @@
       auxScore = { cp: 0, mate: null };
       auxBest = null;
       auxResolve = resolve;
-      worker.postMessage('stop');
+      if (searching) worker.postMessage('stop');
+      searching = true;
       worker.postMessage(`position fen ${fen}`);
       worker.postMessage('go movetime 400 depth 10');
       setTimeout(() => {
@@ -424,9 +446,9 @@
     if (!ready) return;
     if (mode === 'aux') return;
     if (busy) {
-      if (Date.now() - busyAt > 20000) {
+      if (Date.now() - busyAt > 8000) {
         busy = false;
-        if (ui) ui.addLog('engine diam 20s — paksa hitung ulang', 'warn');
+        if (ui) ui.addLog('engine diam 8s — paksa hitung ulang', 'warn');
       } else return;
     }
     const board = findBoard();
@@ -436,6 +458,10 @@
     if (fen === lastFen && lastBest) return;
 
     if (lastFen && fen !== lastFen) {
+      // panah posisi lama langsung dibersihkan supaya tidak ada panah nyangkut
+      if (ratingTimer) { clearTimeout(ratingTimer); ratingTimer = null; }
+      const lay = board.querySelector('#bc-arrow-layer');
+      if (lay) clearLayer(lay);
       playerSide = playerSide || playerColor(board);
       pendingClass = {
         oldFen: lastFen,
@@ -456,9 +482,12 @@
     infoCount = 0;
     staleStop = true;   // 'stop' di bawah bisa memicu bestmove basi
     applyStrength();
-    worker.postMessage('stop');
+    // 'stop' hanya kalau ada pencarian berjalan; kalau tidak, build ini bisa
+    // membuang perintah 'go' berikutnya dan panah tidak pernah muncul.
+    if (searching) worker.postMessage('stop');
+    searching = true;
     worker.postMessage(`position fen ${fen}`);
-    worker.postMessage(BCElo.goCommand(profile()));
+    worker.postMessage(fastGo(profile()));
   }
 
   /* ---------------- klasifikasi ---------------- */
@@ -483,9 +512,22 @@
 
   function doClassify(p) {
     if (!CLS) return;
+
+    // kalau dua ply lewat dalam satu tick (bot balas cepat), jangan dinilai:
+    // pemilik langkahnya jadi ambigu dan stats bisa ketuker.
+    const dPly = plyIndex(p.newFen) - plyIndex(p.oldFen);
+    if (dPly !== 1) {
+      if (ui) ui.addLog('lewati 1 langkah (2 ply sekaligus)', 'warn');
+      return;
+    }
+
     const before = evalCache.get(p.oldFen);
+    if (!before) return;
     const after = evalCache.get(p.newFen);
-    if (!before || !after) return;
+    // eval posisi sesudah hanya dipakai kalau langkahnya tidak ada di daftar MultiPV.
+    // Kalau ada, tidak perlu pencarian kedua → kategori muncul lebih cepat.
+    const seenEarly = before.map && before.map[p.played];
+    if (!seenEarly && !after) return;
 
     // riwayat SAN kadang belum ter-update saat requestMove; ambil ulang di sini
     if (!p.sans || !p.sans.length) {
@@ -497,12 +539,13 @@
     // sehingga tidak ada bias tempo antar-posisi.
     // Cara 2 (cadangan): negasi eval posisi sesudah (bias untuk langkah di luar top-5).
     let cpAfter, mateAfter, method;
-    const mvSeen = before.map && before.map[p.played];
+    const mvSeen = seenEarly;
     if (mvSeen) {
       cpAfter = CLS.toCp(mvSeen.cp, mvSeen.mate);
       mateAfter = mvSeen.mate == null ? null : mvSeen.mate;
       method = 'map';
     } else {
+      if (!after) return;
       cpAfter = -CLS.toCp(after.cp, after.mate);
       mateAfter = after.mate == null ? null : -after.mate;
       method = 'xpos';
@@ -524,8 +567,8 @@
 
     const loss = Math.max(0, CLS.toCp(before.cp, before.mate) - cpAfter);
 
-    // stats hanya untuk langkah pemain sendiri
-    const mine = !playerSide || p.mover === playerSide;
+    // stats hanya untuk langkah pemain sendiri; kalau warna belum diketahui, jangan hitung
+    const mine = !!playerSide && p.mover === playerSide;
     if (mine) {
       CLS.addToStats(stats, cat, loss);
       if (ui) {
@@ -537,7 +580,7 @@
     if (ui) {
       const bCp = CLS.toCp(before.cp, before.mate);
       const aCp = Math.round(cpAfter);
-      ui.addLog(`${cat.label} ${p.played} (${bCp}→${aCp}${mine ? '' : ' lwn'}) s${(p.sans || []).length}`,
+      ui.addLog(`${cat.label} ${p.played} (${bCp}→${aCp}${mine ? '' : ' lwn'})`,
         cat.key === 'blunder' || cat.key === 'miss' ? 'err' : cat.key === 'mistake' || cat.key === 'inaccuracy' ? 'warn' : 'ok');
     }
     window.__bcLastClass = { cat: cat.key, played: p.played, before: CLS.toCp(before.cp, before.mate), after: Math.round(cpAfter), loss: Math.round(loss), mine, method };
@@ -711,6 +754,7 @@
         CFG.autoMove = v;
         chrome.storage.local.set({ autoMove: v });
         ui.addLog(v ? 'auto-move ON' : 'auto-move OFF', v ? 'warn' : 'ok');
+        if (v) maybeAutoPlay();
       },
       onMoveDelay: (v) => {
         CFG.moveDelay = v;
@@ -761,7 +805,7 @@
     if (ui) ui.setElo(profile());
   }
 
-  // panah saran: hanya saat giliran sendiri
+  // panah saran: hanya saat giliran sendiri, tanpa label (biar tidak "BEST" terus)
   function refreshArrows() {
     const board = findBoard();
     if (!board) return;
@@ -773,7 +817,6 @@
     if (!isMyTurn(board, fen)) return;   // giliran lawan → jangan gambar panah
 
     drawArrow(layer, lastBest.slice(0, 2), lastBest.slice(2, 4), '#81b64c', 0.16);
-    if (CFG.labels) drawBadge(layer, lastBest.slice(2, 4), 'BEST', '#81b64c');
   }
 
   function renderBest(uci) {
@@ -783,33 +826,90 @@
     refreshPanel();
     setStatus('ok', 'ok');
     refreshArrows();
-    if (CFG.autoMove && CFG.enabled && isMyTurn(board, lastFen)) {
-      autoPlay(board, uci.slice(0, 2), uci.slice(2, 4));
-    }
+    maybeAutoPlay(uci);
+  }
+
+  // kalau auto-move dinyalakan setelah saran sudah ada, langsung jalan
+  function maybeAutoPlay(uci) {
+    if (!CFG.autoMove || !CFG.enabled) return;
+    const board = findBoard();
+    if (!board) return;
+    const mv = uci || lastBest;
+    if (!mv || mv.length < 4) return;
+    const fen = lastFen || readFen(board);
+    if (!isMyTurn(board, fen)) return;
+    autoPlay(board, mv.slice(0, 2), mv.slice(2, 4));
   }
 
   /* ---------------- auto play (opsional) ---------------- */
 
-  function clickSquare(board, name) {
-    const c = sqCenter(board, name);
-    const r = board.getBoundingClientRect();
-    const x = r.left + c.x;
-    const y = r.top + c.y;
-    for (const type of ['pointerdown', 'mousedown', 'pointerup', 'mouseup']) {
-      const ev = new MouseEvent(type, {
-        bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0, view: window,
-      });
-      (document.elementFromPoint(x, y) || board).dispatchEvent(ev);
+  // chess.com memasang handler di elemen bidak dan di elemen .hint (kotak tujuan
+  // yang muncul setelah bidak dipilih). elementFromPoint tidak bisa dipakai:
+  // ada tombol melayang chess.com di atas papan.
+  function squareEl(board, name) {
+    const f = FILES.indexOf(name[0]) + 1;
+    const r = name[1];
+    const sel = `[class*="square-${f}${r}"]`;
+    return (
+      board.querySelector('.hint' + sel) ||
+      board.querySelector('.piece' + sel) ||
+      board.querySelector(sel) ||
+      null
+    );
+  }
+
+  function fireEvents(el, x, y, down) {
+    const base = {
+      bubbles: true, cancelable: true, composed: true,
+      clientX: x, clientY: y, button: 0, buttons: down ? 1 : 0, view: window,
+    };
+    if (down) {
+      el.dispatchEvent(new PointerEvent('pointerdown', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      el.dispatchEvent(new MouseEvent('mousedown', base));
+    } else {
+      el.dispatchEvent(new PointerEvent('pointerup', { ...base, pointerId: 1, pointerType: 'mouse', isPrimary: true }));
+      el.dispatchEvent(new MouseEvent('mouseup', base));
+      el.dispatchEvent(new MouseEvent('click', base));
     }
   }
 
+  function tapSquare(board, name) {
+    const el = squareEl(board, name);
+    if (!el) return false;
+    const r = el.getBoundingClientRect();
+    const x = r.left + r.width / 2;
+    const y = r.top + r.height / 2;
+    fireEvents(el, x, y, true);
+    setTimeout(() => fireEvents(el, x, y, false), 25);
+    return true;
+  }
+
   function autoPlay(board, from, to) {
-    const key = from + to;
+    const key = lastFen + ':' + from + to;
     if (board.dataset.bcPlayed === key) return;
     board.dataset.bcPlayed = key;
+    const fenBefore = lastFen || readFen(board);
+
     setTimeout(() => {
-      clickSquare(board, from);
-      setTimeout(() => clickSquare(board, to), 140);
+      if (!tapSquare(board, from)) {
+        if (ui) ui.addLog('auto-move: kotak ' + from + ' tidak ketemu', 'err');
+        return;
+      }
+      setTimeout(() => {
+        if (!tapSquare(board, to)) {
+          if (ui) ui.addLog('auto-move: kotak ' + to + ' tidak ketemu', 'err');
+        }
+        // verifikasi sekali, tunggu 1,6 s (jangan double-tap saat animasi masih jalan)
+        setTimeout(() => {
+          const now = readFen(board);
+          if (now && now === fenBefore) {
+            tapSquare(board, to);
+            if (ui) ui.addLog('auto-move ulang (belum geser)', 'warn');
+          } else if (ui) {
+            ui.addLog('auto-move ' + from + to, 'ok');
+          }
+        }, 1600);
+      }, 220);
     }, CFG.moveDelay);
   }
 
@@ -836,6 +936,7 @@
       setStatus('engine lambat', 'err');
     }
     requestMove();
+    maybeAutoPlay();
   }
 
   function toggle() {
@@ -911,6 +1012,27 @@
 
   injectBridge();
   startEngine();
-  setInterval(tick, 1200);
-  setTimeout(tick, 800);
+
+  // reaksi cepat: begitu papan berubah, langsung cek (debounce 60 ms)
+  let fastTimer = null;
+  function fastTick() {
+    if (fastTimer) clearTimeout(fastTimer);
+    fastTimer = setTimeout(() => {
+      fastTimer = null;
+      try { tick(); } catch (_) {}
+    }, 60);
+  }
+
+  function watchBoard() {
+    try {
+      const board = findBoard();
+      if (!board || board.dataset.bcWatched === '1') return;
+      board.dataset.bcWatched = '1';
+      const mo = new MutationObserver(fastTick);
+      mo.observe(board, { childList: true, subtree: true, attributes: true, attributeFilter: ['class'] });
+    } catch (_) {}
+  }
+
+  setInterval(() => { watchBoard(); tick(); }, 350);
+  setTimeout(() => { watchBoard(); tick(); }, 700);
 })();

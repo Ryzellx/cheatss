@@ -52,6 +52,6 @@
   }
 
   push();
-  setInterval(push, 700);
+  setInterval(push, 250);
   window.addEventListener('load', push, { once: true });
 })();
